@@ -7,7 +7,6 @@ import discord
 from discord.ext import commands
 import config
 import io
-import requests
 
 # Настройка логирования
 logging.basicConfig(
