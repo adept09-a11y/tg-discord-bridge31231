@@ -6,6 +6,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 DISCORD_CHANNEL_ID = os.getenv('DISCORD_CHANNEL_ID')
+TELEGRAM_CHAT_ID = None
 
 # Проверяем, что все токены загружены
 if not TELEGRAM_BOT_TOKEN:
