@@ -2,6 +2,9 @@ import asyncio
 import logging
 import threading
 import io
+import os
+import tempfile
+import subprocess
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes, CommandHandler
 import discord
@@ -23,8 +26,8 @@ class BridgeBot:
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
-            "👋 Привет! Я мост между Telegram и Discord.\n"
-            "Отправь мне ссылку, GIF, видео, фото или текст, и я перешлю это в Discord!"
+            "👋 Привет! Я конвертер GIF.\n"
+            "Отправь мне GIF, и я конвертирую её в WebM для Discord!"
         )
 
     async def handle_telegram_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -35,84 +38,97 @@ class BridgeBot:
         sender = message.from_user.first_name if message.from_user else "Unknown"
 
         try:
-            if message.text:
-                logger.info(f"Получен текст от {sender}")
+            # Проверяем, есть ли GIF/анимация
+            if message.animation or (message.document and message.document.mime_type == 'image/gif'):
+                logger.info(f"Получена GIF от {sender}")
+                await update.message.reply_text("⏳ Конвертирую GIF в WebM...")
+                await self._convert_and_send_gif(message, context, sender)
+            
+            elif message.text:
+                logger.info(f"Получен текст от {sender}: {message.text}")
                 content = f"**От:** {sender}\n\n{message.text}"
                 self._send_to_discord_safe(content)
 
-            # 1. Обработка GIF (анимаций)
-            elif message.animation or (message.document and message.document.mime_type == 'image/gif'):
-                logger.info(f"Получена GIF от {sender}")
-                await self._forward_gif(message, context, sender)
-
-            # 2. Обработка обычных видео
-            elif message.document and message.document.mime_type.startswith('video/'):
-                logger.info(f"Получен видео-документ от {sender}")
-                await self._forward_media(message, context, sender, is_document=True)
-            elif message.video:
-                logger.info(f"Получено видео от {sender}")
-                await self._forward_media(message, context, sender, is_document=False)
-
-            # 3. Обработка фото
-            elif message.photo:
-                logger.info(f"Получено фото от {sender}")
-                await self._forward_photo(message, context, sender)
-
         except Exception as e:
-            logger.error(f"Ошибка обработки сообщения: {e}", exc_info=True)
+            logger.error(f"Ошибка обработки: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
-    async def _forward_gif(self, message, context, sender):
-        """Специальная обработка для GIF, чтобы Discord показал их как анимацию"""
+    async def _convert_and_send_gif(self, message, context, sender):
+        """Скачивает GIF, конвертирует в WebM и отправляет в Discord"""
         file_obj = message.animation or message.document
         file = await context.bot.get_file(file_obj.file_id)
         
-        file_bytes = io.BytesIO()
-        await file.download_to_memory(file_bytes)
-        file_bytes.seek(0)
+        # Создаем временные файлы
+        with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as temp_gif:
+            gif_path = temp_gif.name
         
-        # ХИТРОСТЬ: Принудительно меняем расширение на .gif, чтобы Discord отобразил его как анимацию
-        original_name = file_obj.file_name or "animation.mp4"
-        if not original_name.lower().endswith('.gif'):
-            filename = "animation.gif"
-        else:
-            filename = original_name
+        webm_path = gif_path.replace('.gif', '.webm')
+        
+        try:
+            # Скачиваем GIF
+            logger.info(f"Скачиваю GIF: {gif_path}")
+            await file.download_to_drive(gif_path)
             
-        caption = message.caption or ""
-        content = f"**От:** {sender}\n{caption}"
-        
-        discord_file = discord.File(file_bytes, filename=filename)
-        self._send_to_discord_safe(content, file=discord_file)
+            # Конвертируем в WebM через ffmpeg
+            logger.info(f"Конвертирую в WebM: {webm_path}")
+            await self._convert_gif_to_webm(gif_path, webm_path)
+            
+            # Отправляем в Discord
+            with open(webm_path, 'rb') as f:
+                discord_file = discord.File(f, filename='converted.webm')
+                content = f"**GIF от:** {sender}"
+                self._send_to_discord_safe(content, file=discord_file)
+            
+            logger.info("✅ GIF успешно конвертирована и отправлена")
+            
+        except Exception as e:
+            logger.error(f"Ошибка конвертации: {e}", exc_info=True)
+            raise
+        finally:
+            # Удаляем временные файлы
+            for path in [gif_path, webm_path]:
+                if os.path.exists(path):
+                    os.remove(path)
 
-    async def _forward_media(self, message, context, sender, is_document=False):
-        file_obj = message.document if is_document else message.video
-        file = await context.bot.get_file(file_obj.file_id)
+    async def _convert_gif_to_webm(self, input_path, output_path):
+        """Конвертирует GIF в WebM используя ffmpeg"""
+        cmd = [
+            'ffmpeg',
+            '-i', input_path,
+            '-c:v', 'libvpx-vp9',
+            '-crf', '30',
+            '-b:v', '0',
+            '-quality', 'good',
+            '-cpu-used', '4',
+            '-an',  # без аудио
+            '-y',   # перезаписать если существует
+            output_path
+        ]
         
-        file_bytes = io.BytesIO()
-        await file.download_to_memory(file_bytes)
-        file_bytes.seek(0)
+        logger.info(f"Запуск ffmpeg: {' '.join(cmd)}")
         
-        filename = file_obj.file_name if is_document else f"video_{file_obj.file_unique_id}.mp4"
-        caption = message.caption or ""
-        content = f"**От:** {sender}\n{caption}"
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
         
-        discord_file = discord.File(file_bytes, filename=filename)
-        self._send_to_discord_safe(content, file=discord_file)
-
-    async def _forward_photo(self, message, context, sender):
-        photo = message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
+        stdout, stderr = await process.communicate()
         
-        file_bytes = io.BytesIO()
-        await file.download_to_memory(file_bytes)
-        file_bytes.seek(0)
+        if process.returncode != 0:
+            error_msg = stderr.decode() if stderr else "Неизвестная ошибка"
+            logger.error(f"ffmpeg ошибка: {error_msg}")
+            raise Exception(f"Ошибка конвертации: {error_msg[:200]}")
         
-        caption = message.caption or ""
-        content = f"**От:** {sender}\n{caption}"
+        # Проверяем размер файла
+        file_size = os.path.getsize(output_path)
+        logger.info(f"WebM создан: {file_size / 1024:.2f} KB")
         
-        discord_file = discord.File(file_bytes, filename=f"photo_{photo.file_unique_id}.jpg")
-        self._send_to_discord_safe(content, file=discord_file)
+        if file_size > 50 * 1024 * 1024:  # 50 MB
+            raise Exception("Файл слишком большой (>50MB)")
 
     def _send_to_discord_safe(self, content, file=None):
+        """Безопасная отправка в Discord из потока Telegram"""
         if not self.discord_channel or not self.discord_loop:
             logger.warning("Discord канал или loop еще не инициализирован")
             return
@@ -123,6 +139,7 @@ class BridgeBot:
                     await self.discord_channel.send(content=content, file=file)
                 else:
                     await self.discord_channel.send(content=content)
+                logger.info("✅ Успешно отправлено в Discord")
             except Exception as e:
                 logger.error(f"Ошибка отправки в Discord: {e}")
 
@@ -145,7 +162,7 @@ def run_discord_bot(bridge: BridgeBot):
             if self.bridge.discord_channel:
                 logger.info(f"✅ Канал Discord найден: #{self.bridge.discord_channel.name}")
             else:
-                logger.error(f"❌ Канал {config.DISCORD_CHANNEL_ID} не найден!")
+                logger.error(f" Канал {config.DISCORD_CHANNEL_ID} не найден!")
 
     bot = DiscordBridgeBot()
     bot.run(config.DISCORD_TOKEN)
@@ -156,10 +173,10 @@ async def run_telegram_bot(bridge: BridgeBot):
     
     application.add_handler(CommandHandler("start", bridge.start_command))
     
-    # ДОБАВЛЕНО: filters.ANIMATION для перехвата GIF из встроенного поиска Telegram
+    # Принимаем GIF (animation), документы и текст
     application.add_handler(
         MessageHandler(
-            filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.ANIMATION,
+            filters.ANIMATION | filters.Document.ALL | filters.TEXT,
             bridge.handle_telegram_message
         )
     )
@@ -180,7 +197,7 @@ async def run_telegram_bot(bridge: BridgeBot):
 
 
 async def main():
-    logger.info("🚀 Запуск моста Telegram -> Discord")
+    logger.info("🚀 Запуск GIF конвертера Telegram -> Discord")
     bridge = BridgeBot()
     
     discord_thread = threading.Thread(target=run_discord_bot, args=(bridge,), daemon=True)
