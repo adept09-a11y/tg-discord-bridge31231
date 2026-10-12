@@ -194,7 +194,7 @@ async def run_telegram_bot(bridge: BridgeBot):
     # Принимаем анимации (GIF/MP4), GIF-документы и текст
     application.add_handler(
         MessageHandler(
-            filters.ANIMATION | (filters.Document.MIME_TYPE('image/gif')) | filters.TEXT,
+            filters.ANIMATION | filters.Document.MimeType('image/gif') | filters.TEXT,
             bridge.handle_telegram_message
         )
     )
