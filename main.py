@@ -7,6 +7,12 @@ import discord
 from discord.ext import commands
 import config
 import io
+# Отладочный вывод - покажет, какие переменные видит бот
+print("=" * 50)
+print("DEBUG: TELEGRAM_BOT_TOKEN =", os.getenv('TELEGRAM_BOT_TOKEN'))
+print("DEBUG: DISCORD_TOKEN =", os.getenv('DISCORD_TOKEN'))
+print("DEBUG: DISCORD_CHANNEL_ID =", os.getenv('DISCORD_CHANNEL_ID'))
+print("=" * 50)
 
 # Настройка логирования
 logging.basicConfig(
