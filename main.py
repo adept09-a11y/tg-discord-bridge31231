@@ -1,6 +1,6 @@
-import asyncio
 import logging
 import threading
+import time
 import os
 import tempfile
 from telegram import Update
@@ -55,7 +55,6 @@ class BridgeBot:
 
         except Exception as e:
             logger.error(f"Ошибка обработки: {e}", exc_info=True)
-            # Пытаемся отправить ошибку пользователю, если это возможно
             try:
                 await update.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
             except:
@@ -105,7 +104,6 @@ class BridgeBot:
                         pass
 
     async def _convert_to_gif(self, input_path, output_path):
-        """Конвертирует видео/GIF в оптимизированный GIF для Discord"""
         cmd = [
             'ffmpeg',
             '-i', input_path,
@@ -117,18 +115,13 @@ class BridgeBot:
         
         logger.info(f"Запуск: {' '.join(cmd)}")
         
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+        # Используем стандартный subprocess для надежности в синхронном/асинхронном миксе
+        import subprocess
+        result = subprocess.run(cmd, capture_output=True, text=True)
         
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode != 0:
-            error_msg = stderr.decode('utf-8', errors='ignore') if stderr else "Неизвестная ошибка"
-            logger.error(f"ffmpeg ошибка (код {process.returncode}): {error_msg}")
-            raise Exception(f"Ошибка конвертации (код {process.returncode}): {error_msg}")
+        if result.returncode != 0:
+            logger.error(f"ffmpeg ошибка (код {result.returncode}): {result.stderr}")
+            raise Exception(f"Ошибка конвертации (код {result.returncode}): {result.stderr[:500]}")
         
         file_size = os.path.getsize(output_path)
         logger.info(f"✅ GIF создан: {file_size / 1024:.2f} KB")
@@ -138,6 +131,7 @@ class BridgeBot:
             logger.warning("Discord канал или loop еще не инициализирован")
             return
 
+        import asyncio
         async def _send():
             try:
                 if file:
@@ -173,8 +167,12 @@ def run_discord_bot(bridge: BridgeBot):
     bot.run(config.DISCORD_TOKEN)
 
 
-async def run_telegram_bot(bridge: BridgeBot):
-    """Правильный запуск Telegram бота через встроенный run_polling"""
+def run_telegram_bot(bridge: BridgeBot):
+    """
+    Запуск Telegram бота. 
+    В python-telegram-bot v20+ метод run_polling() является СИНХРОННЫМ и блокирующим.
+    Он сам управляет своим event loop, поэтому await и asyncio.run вокруг него НЕ НУЖНЫ.
+    """
     application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
     
     application.add_handler(CommandHandler("start", bridge.start_command))
@@ -186,29 +184,28 @@ async def run_telegram_bot(bridge: BridgeBot):
     )
     
     logger.info("Запуск Telegram бота (режим polling)...")
-    # run_polling автоматически обрабатывает запуск, поддержание работы и корректное завершение!
-    # drop_pending_updates=True игнорирует сообщения, пришедшие пока бот был выключен
-    await application.run_polling(drop_pending_updates=True)
+    application.run_polling(drop_pending_updates=True)
 
 
-async def main():
+def main():
     logger.info("🚀 Запуск GIF конвертера Telegram -> Discord")
     bridge = BridgeBot()
     
-    # Запускаем Discord в отдельном потоке (daemon=True означает, что он закроется вместе с основным скриптом)
+    # 1. Запускаем Discord в отдельном потоке (он будет работать независимо)
     discord_thread = threading.Thread(target=run_discord_bot, args=(bridge,), daemon=True)
     discord_thread.start()
     
-    # Даем Discord 3 секунды на подключение
-    await asyncio.sleep(3)
+    # 2. Даем Discord 3 секунды на подключение и инициализацию loop
+    time.sleep(3)
     
-    # Запускаем Telegram бота. Эта функция будет работать вечно, пока бот не будет остановлен извне.
-    await run_telegram_bot(bridge)
+    # 3. Запускаем Telegram бота в главном потоке. 
+    # Эта функция блокирующая и будет работать вечно, пока бот не будет остановлен.
+    run_telegram_bot(bridge)
 
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         logger.info("Бот остановлен пользователем (Ctrl+C)")
     except Exception as e:
