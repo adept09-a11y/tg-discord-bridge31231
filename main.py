@@ -99,13 +99,13 @@ class BridgeBot:
                     except:
                         pass
 
-    async def _convert_to_gif(self, input_path, output_path):
+        async def _convert_to_gif(self, input_path, output_path):
         """Конвертирует видео/GIF в оптимизированный GIF для Discord"""
-        # Эта команда создает высококачественный GIF с правильной палитрой и ограничением размера
+        # Упрощенная и максимально надежная команда конвертации
         cmd = [
             'ffmpeg',
             '-i', input_path,
-            '-vf', 'fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
+            '-vf', 'fps=15,scale=480:-1:flags=lanczos,format=rgb24',
             '-loop', '0',
             '-y',
             output_path
@@ -122,9 +122,10 @@ class BridgeBot:
         stdout, stderr = await process.communicate()
         
         if process.returncode != 0:
-            error_msg = stderr.decode() if stderr else "Неизвестная ошибка"
-            logger.error(f"ffmpeg ошибка: {error_msg}")
-            raise Exception(f"Ошибка конвертации: {error_msg[:200]}")
+            # Выводим полную ошибку и код возврата для точной диагностики
+            error_msg = stderr.decode('utf-8', errors='ignore') if stderr else "Неизвестная ошибка"
+            logger.error(f"ffmpeg ошибка (код {process.returncode}): {error_msg}")
+            raise Exception(f"Ошибка конвертации (код {process.returncode}): {error_msg}")
         
         file_size = os.path.getsize(output_path)
         logger.info(f"✅ GIF создан: {file_size / 1024:.2f} KB")
